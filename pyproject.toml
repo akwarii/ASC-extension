@@ -3,24 +3,27 @@ requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "[[PackageName]]"
-version = "[[Version number]]"
-description = "[[Short description]]"
+name = "ASC-extension"
+version = "0.0.1"
+description = "OVITO extension for the Atomic Structure Classification (ASC) library."
 keywords = ["ovito", "ovito-extension"]
-authors = [{name = "[[Author 1 name]]", email = "[[Author 1 email]]"}, {name = "[[Author 2 name]]", email = "[[Author 2 email]]"}]
-maintainers = [{name = "[[Maintainer 1 name]]", email = "[[Maintainer 1 email]]"}]
-license = {text = "[[License]]"}
+authors = [{name = "Gael Huynh", email = "gael.huynh@gmail.com"}, {name = "Dylan Bissuel", email = "dylan.bissuel@univ-lyon1.fr"}]
+maintainers = [{name = "Gael Huynh", email = "gael.huynh@gmail.com"}]
+license = {text = "MIT License"}
 readme = "README.md"
-requires-python = ">=3.7"
+requires-python = ">=3.11"
 dependencies = [
-    "ovito >= 3.9.1",
+    "ovito >= 3.15.0",
+    "freud-analysis>=3.4.0",
+    "torch>=2.0.0",
+    "torch-geometric>=2.6.1",
 ]
 
 [project.urls]
-repository = "[[Repository Link]]"
+repository = "https://github.com/akwarii/ASC-extension.git"
 
 [project.entry-points.'OVITO.Modifier']
-"[[Human readable modifier name]]" = "[[PackageName]]:[[ModifierName]]"
+"Atomic Structure Classification" = "ASC_extension:AtomicStructureClassification"
 
 [tool.setuptools.packages.find]
 where = ["src"]
