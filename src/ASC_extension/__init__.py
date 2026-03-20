@@ -2,6 +2,7 @@
 # Description of your Python-based modifier.
 
 import math
+import os
 from collections.abc import Generator
 
 import torch
@@ -16,7 +17,7 @@ from torch_geometric.nn import Linear
 from torch_geometric.utils import scatter
 from traits.api import Bool, Enum, Property, Range, cached_property, observe
 
-#TODO currently, dependencies from the main code are not used to keep a standalone modifier
+# TODO currently, dependencies from the main code are not used to keep a standalone modifier
 # Instead, needed classes are redefined in this file. This is not ideal, but it allows us to
 # test the modifier without needing to export a model eg, with torchscript. The best solution
 # would be to find a way to import the model definition from the main code without importing
@@ -24,51 +25,156 @@ from traits.api import Bool, Enum, Property, Range, cached_property, observe
 
 chemical_symbols = [
     # 0
-    'X',
+    "X",
     # 1
-    'H', 'He',
+    "H",
+    "He",
     # 2
-    'Li', 'Be', 'B', 'C', 'N', 'O', 'F', 'Ne',
+    "Li",
+    "Be",
+    "B",
+    "C",
+    "N",
+    "O",
+    "F",
+    "Ne",
     # 3
-    'Na', 'Mg', 'Al', 'Si', 'P', 'S', 'Cl', 'Ar',
+    "Na",
+    "Mg",
+    "Al",
+    "Si",
+    "P",
+    "S",
+    "Cl",
+    "Ar",
     # 4
-    'K', 'Ca', 'Sc', 'Ti', 'V', 'Cr', 'Mn', 'Fe', 'Co', 'Ni', 'Cu', 'Zn',
-    'Ga', 'Ge', 'As', 'Se', 'Br', 'Kr',
+    "K",
+    "Ca",
+    "Sc",
+    "Ti",
+    "V",
+    "Cr",
+    "Mn",
+    "Fe",
+    "Co",
+    "Ni",
+    "Cu",
+    "Zn",
+    "Ga",
+    "Ge",
+    "As",
+    "Se",
+    "Br",
+    "Kr",
     # 5
-    'Rb', 'Sr', 'Y', 'Zr', 'Nb', 'Mo', 'Tc', 'Ru', 'Rh', 'Pd', 'Ag', 'Cd',
-    'In', 'Sn', 'Sb', 'Te', 'I', 'Xe',
+    "Rb",
+    "Sr",
+    "Y",
+    "Zr",
+    "Nb",
+    "Mo",
+    "Tc",
+    "Ru",
+    "Rh",
+    "Pd",
+    "Ag",
+    "Cd",
+    "In",
+    "Sn",
+    "Sb",
+    "Te",
+    "I",
+    "Xe",
     # 6
-    'Cs', 'Ba', 'La', 'Ce', 'Pr', 'Nd', 'Pm', 'Sm', 'Eu', 'Gd', 'Tb', 'Dy',
-    'Ho', 'Er', 'Tm', 'Yb', 'Lu',
-    'Hf', 'Ta', 'W', 'Re', 'Os', 'Ir', 'Pt', 'Au', 'Hg', 'Tl', 'Pb', 'Bi',
-    'Po', 'At', 'Rn',
+    "Cs",
+    "Ba",
+    "La",
+    "Ce",
+    "Pr",
+    "Nd",
+    "Pm",
+    "Sm",
+    "Eu",
+    "Gd",
+    "Tb",
+    "Dy",
+    "Ho",
+    "Er",
+    "Tm",
+    "Yb",
+    "Lu",
+    "Hf",
+    "Ta",
+    "W",
+    "Re",
+    "Os",
+    "Ir",
+    "Pt",
+    "Au",
+    "Hg",
+    "Tl",
+    "Pb",
+    "Bi",
+    "Po",
+    "At",
+    "Rn",
     # 7
-    'Fr', 'Ra', 'Ac', 'Th', 'Pa', 'U', 'Np', 'Pu', 'Am', 'Cm', 'Bk',
-    'Cf', 'Es', 'Fm', 'Md', 'No', 'Lr',
-    'Rf', 'Db', 'Sg', 'Bh', 'Hs', 'Mt', 'Ds', 'Rg', 'Cn', 'Nh', 'Fl', 'Mc',
-    'Lv', 'Ts', 'Og',
+    "Fr",
+    "Ra",
+    "Ac",
+    "Th",
+    "Pa",
+    "U",
+    "Np",
+    "Pu",
+    "Am",
+    "Cm",
+    "Bk",
+    "Cf",
+    "Es",
+    "Fm",
+    "Md",
+    "No",
+    "Lr",
+    "Rf",
+    "Db",
+    "Sg",
+    "Bh",
+    "Hs",
+    "Mt",
+    "Ds",
+    "Rg",
+    "Cn",
+    "Nh",
+    "Fl",
+    "Mc",
+    "Lv",
+    "Ts",
+    "Og",
 ]
 atomic_numbers = {symbol: Z for Z, symbol in enumerate(chemical_symbols)}
 
 
-def type_id_to_atomic_number(type_id: torch.Tensor, type_mapping: dict[int, int]) -> torch.Tensor:
+def get_atomic_numbers(data: DataCollection) -> torch.Tensor:
     """Convert a tensor of type ids to atomic numbers using a mapping.
 
     Args:
-        type_id: A tensor of shape (num_atoms,) containing the type ids of the atoms.
-        type_mapping: A dictionary mapping type ids to atomic numbers.
+        data: The OVITO DataCollection object.
 
     Returns:
         A tensor of shape (num_atoms,) containing the atomic numbers of the atoms.
     """
+    ptypes = data.particles_.particle_types_
+    type_mapper = {t.id: atomic_numbers.get(t.name, 0) for t in ptypes.types}
+    type_id = torch.from_numpy(ptypes[...]).long()
+
     max_type_id = int(type_id.max().item())
     mapping_tensor = torch.zeros(max_type_id + 1, dtype=torch.long)
-    for t_id, z in type_mapping.items():
-        mapping_tensor[t_id - 1] = z
 
-    atomic_numbers = mapping_tensor[type_id]
+    for t_id, z in type_mapper.items():
+        mapping_tensor[t_id] = z
 
-    return atomic_numbers
+    return mapping_tensor[type_id]
 
 
 class PeriodicKNN:
@@ -80,18 +186,16 @@ class PeriodicKNN:
 
         self.k = k
 
-    def _get_graph_data_freud(self, atoms: DataCollection) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _get_graph_data_freud(
+        self, atoms: DataCollection, selection: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         from freud import AABBQuery, Box
-        
-        # Map OVITO particle types to atomic numbers
-        ptypes = atoms.particles_.particle_types_
-        type_mapper = {t.id: atomic_numbers.get(t.name, 0) for t in ptypes.types}
-        type_id = torch.from_numpy(ptypes[...]).long()
 
-        x = type_id_to_atomic_number(type_id, type_mapper)
+        # Map OVITO particle types to atomic numbers
+        x = get_atomic_numbers(atoms)[selection]
 
         # Extract data from OVITO DataCollection object
-        pos = atoms.particles.positions[...]
+        pos = atoms.particles.positions[...][selection]
         cell_matrix = atoms.cell[...][:3, :3].T
 
         # Create Freud Box for PBC handling
@@ -115,23 +219,19 @@ class PeriodicKNN:
 
         return x, edge_index, edge_attr
 
-    def _get_graph_data_ovito(self, atoms: DataCollection) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _get_graph_data_ovito(
+        self, atoms: DataCollection, selection: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         from ovito.data import NearestNeighborFinder
-        
-        # Map OVITO particle types to atomic numbers
-        ptypes = atoms.particles_.particle_types_
-        type_mapper = {t.id: atomic_numbers.get(t.name, 0) for t in ptypes.types}
-        type_id = torch.from_numpy(ptypes[...]).long()
 
-        x = type_id_to_atomic_number(type_id, type_mapper)
+        x = get_atomic_numbers(atoms)[selection]
 
         finder = NearestNeighborFinder(self.k, atoms)
-        indices, deltas = finder.find_all()
+        indices, deltas = finder.find_all(indices=selection.tolist())
 
-        # Build edge index
         # q_idx represents the central atoms (query points)
         # p_idx represents the neighbor atoms
-        q_idx = torch.arange(atoms.particles.count).view(-1, 1).expand(-1, self.k).flatten()
+        q_idx = torch.arange(selection.shape[0]).view(-1, 1).expand(-1, self.k).flatten()
         p_idx = torch.from_numpy(indices).flatten().long()
 
         edge_index = torch.stack([q_idx, p_idx])
@@ -141,11 +241,17 @@ class PeriodicKNN:
 
         return x, edge_index, edge_attr
 
-    def convert(self, ovito_data: DataCollection, backend: str = "ovito") -> Data:
+    def convert(
+        self,
+        ovito_data: DataCollection,
+        selection: torch.Tensor | None = None,
+        backend: str = "ovito",
+    ) -> Data:
         """Convert a single atomic structure to a PyG Data object.
 
         Args:
             atoms_repr: An OVITO DataCollection.
+            mask: A boolean tensor indicating which atoms to include in the graph.
             backend: The backend to use for KNN computation.
 
         Returns:
@@ -153,12 +259,15 @@ class PeriodicKNN:
         """
         assert ovito_data.cell is not None, "The input structure must have a cell defined."
 
+        if selection is None:
+            selection = torch.arange(ovito_data.particles.count)
+
         knn_method = {
             "freud": self._get_graph_data_freud,
             "ovito": self._get_graph_data_ovito,
         }
 
-        x, edge_index, edge_attr = knn_method[backend](ovito_data)
+        x, edge_index, edge_attr = knn_method[backend](ovito_data, selection)
 
         pyg_data = Data(
             num_nodes=ovito_data.particles.count,
@@ -294,9 +403,9 @@ class PaiNNMessage(nn.Module):
             rbf_filter: Radial filter (shape [num_edges, 1, 3 * hidden_channels]).
             edge_vector: Distance unit vectors (shape [num_edges, 3]).
         """
-        assert rbf_filter.shape[-1] == 3 * self.hidden_channels, (
-            "Edge filter output dimension must be 3x hidden_channels"
-        )
+        assert (
+            rbf_filter.shape[-1] == 3 * self.hidden_channels
+        ), "Edge filter output dimension must be 3x hidden_channels"
 
         i, j = edge_index
 
@@ -480,57 +589,79 @@ class PaiNN(nn.Module):
 
 class AtomicStructureClassification(ModifierInterface):
     ckpt_file = FilePath(
-        label="Checkpoint file",
+        label="Model file",
         ovito_file_exists=True,
         ovito_file_filter=["PyTorch checkpoint files (*.ckpt)", "All files (*)"],
     )
 
-    device = Enum("cuda", ["cuda", "cpu"], label="Device")
+    if torch.cuda.is_available():
+        device = Enum("cuda", ["cuda", "cpu"], label="Device")
+    elif torch.backends.mps.is_available():
+        device = Enum("mps", ["mps", "cpu"], label="Device")
+    else:
+        device = "cpu"
+
     should_compile = Bool(True, label="Model compilation")
 
     _exponent = Range(low=0, value=10, label="Batch size exponent (2^x)")
     batch_size = Property(observe="_exponent", label="Batch size")
 
+    __cpu_count = os.cpu_count() or 1
+    num_workers = Range(
+        low=0,
+        high=__cpu_count,
+        value=__cpu_count,
+        label="Data loading workers",
+    )
+
     use_freud = Bool(False, label="Use Freud backend\n(recommended for\nlarge systems)")
     only_selected = Bool(False, label="Only selected")
 
-    @observe("device, should_compile")
-    def _validate_compilation_state(self, event):
-        if self.should_compile:
-            if self.device == "cpu":
-                self.should_compile = False
-                print("Compilation disabled: Only supported on CUDA.")
-            elif torch.cuda.get_device_capability() < (7, 0):
-                self.should_compile = False
-                print("Compilation disabled: Requires Compute Capability 7.0+.")
+    @observe("ckpt_file")
+    def _on_ckpt_file_change(self, event) -> None:
+        self.load_model()
+
+    @observe("device")
+    def _on_device_change(self, event) -> None:
+        self.model.to(self.device)
+
+    @observe("should_compile")
+    def _on_compile_change(self, event) -> None:
+        if hasattr(self, "model"):
+            self.compile_model()
 
     @cached_property
     def _get_batch_size(self) -> int:
         return int(2**self._exponent)
 
-    def get_graph(self, data: DataCollection, num_neighbors: int) -> Data:
-        backend = "freud" if self.use_freud else "ovito"
-        graph = PeriodicKNN(k=num_neighbors).convert(data, backend=backend)
-        return graph
-
     def load_model(self) -> None:
-        #TODO find how to load the model with minimal dependencies. Options seems to be to export the use torchscript
+        # TODO find how to load the model with minimal dependencies. Options seems to be to export the use torchscript
         # or to import the model definition in this file, which is not ideal. For now we just fallback to a dummy model
         # to test the modifier workflow without needing to export a model.
-        print("Model loading is not implemented. Using untrained model for testing.")
         try:
-            model: torch.nn.Module = torch.load(self.ckpt_file, map_location=self.device, weights_only=False)
+            self.model: torch.nn.Module = torch.load(
+                self.ckpt_file, map_location=self.device, weights_only=False
+            )
         except Exception:
-            model = PaiNN(out_channels=10)
+            print("Model loading is not implemented. Using untrained model for testing.")
+            self.model = PaiNN(out_channels=10)
 
-        if self.should_compile:
-            model.compile(fullgraph=True, dynamic=True)
-
-        self.model = model.to(self.device)
+        self.model = self.model.to(self.device)
+        self.compile_model()
         self.model.eval()
 
+    def compile_model(self) -> None:
+        if not self.should_compile:
+            return
+
+        if self.device != "cuda" or torch.cuda.get_device_capability() < (7, 0):
+            self.should_compile = False
+            return
+
+        self.model.compile(fullgraph=True, dynamic=True)
+
     @torch.inference_mode()
-    def inference(self, model, graph: Data) -> Generator[float, None, torch.Tensor]:
+    def inference(self, model, loader) -> Generator[float, None, torch.Tensor]:
         """Run inference on a single DataCollection object and return the predicted class indices for
         each particle.
 
@@ -538,24 +669,15 @@ class AtomicStructureClassification(ModifierInterface):
             model: The trained PyTorch Lightning Module for prediction.
             data: The input DataCollection object containing the particle data to predict on.
         """
-        num_layers: int = model.num_layers
-
-        loader = NeighborLoader(
-            graph,
-            num_neighbors=[-1] * num_layers,
-            batch_size=self.batch_size,
-            shuffle=False,
-            num_workers=8,
-            pin_memory=True,
-        )
-
         graph_preds = []
         for i, batch in enumerate(loader):
             batch = batch.to(self.device)
+
             with torch.autocast(device_type=self.device):
                 all_logits: torch.Tensor = model(batch.x, batch.edge_index, batch.edge_attr)
-                target_logits = all_logits[:batch.batch_size]
+                target_logits = all_logits[: batch.batch_size]
                 out = torch.argmax(target_logits, dim=-1)
+
             graph_preds.append(out.to("cpu", non_blocking=True))
             yield (i / len(loader))
 
@@ -565,20 +687,47 @@ class AtomicStructureClassification(ModifierInterface):
         return predictions
 
     def modify(self, data: DataCollection, frame: int, **kwargs) -> Generator[float, None, None]:
-        if self.only_selected:
-            # Placeholder for logic to filter only selected particles
-            pass
-
         # Don't run the modifier if no checkpoint file is provided
         if not self.ckpt_file:
             return
-        
+
+        num_neighbors = 12  # TODO placeholder, should be extracted from checkpoint
+        backend = "freud" if self.use_freud else "ovito"
+        knn = PeriodicKNN(k=num_neighbors)
+
+        selected = torch.arange(data.particles.count)
+        if self.only_selected:
+            # No selection modifier is applied
+            if data.particles.selection is None:
+                return
+
+            mask = torch.from_numpy(data.particles.selection[...]).bool()
+
+            # There is a selection modifier, but no particles are selected
+            if not mask.sum():
+                return
+
+            selected = torch.argwhere(mask).squeeze()
+
         if not hasattr(self, "model"):
             self.load_model()
+            
+        # TODO cache the graph if the structure doesn't change
+        graph = knn.convert(data, selection=selected, backend=backend)
 
-        num_neighbors = 12 # placeholder, should be extracted from checkpoint
-        graph = self.get_graph(data, num_neighbors=num_neighbors) #TODO cache the graph if the structure doesn't change
-        results = yield from self.inference(self.model, graph)
+        loader = NeighborLoader(
+            graph,
+            num_neighbors=[-1] * self.model.num_layers,  # type: ignore
+            batch_size=min(self.batch_size, len(graph)),
+            shuffle=False,
+            num_workers=self.num_workers,
+            pin_memory=True,
+        )
+
+        # default to -1 for unpredicted particles
+        results = torch.full((data.particles.count,), -1, dtype=torch.long)
+        out = yield from self.inference(self.model, loader)
+        results[selected] = out
 
         # Placeholder for logic to apply results to the data collection
         data.particles_.create_property("ASC Structure Type", dtype=int, data=results)
