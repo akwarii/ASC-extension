@@ -207,15 +207,14 @@ class AtomicStructureClassification(ModifierInterface):
 
     @observe("device")
     def _on_device_change(self, event) -> None:
-        if hasattr(self, "_program"):
+        if hasattr(self, "model"):
             self._program = move_to_device_pass(self._program, self.device)
             self.model = self._program.module()
 
     # TODO currently, a compiled model is not replaced with an uncompiled one if the user unchecks the "Model compilation" checkbox.
     @observe("should_compile")
     def _on_compile_change(self, event) -> None:
-        if hasattr(self, "_program"):
-            self.model = self._program.module()
+        if hasattr(self, "model"):
             self.compile_model()
 
     @cached_property
@@ -230,14 +229,13 @@ class AtomicStructureClassification(ModifierInterface):
         if missing_keys:
             raise ValueError(f"Metadata is missing required keys: {missing_keys}")
 
-        if self.metadata["num_neighbors"] <= 0:
-            raise ValueError(
-                f"Invalid metadata: 'num_neighbors' must be strictly positive (got {self.metadata['num_neighbors']})."
-            )
-        if self.metadata["num_layers"] <= 0:
-            raise ValueError(
-                f"Invalid metadata: 'num_layers' must be strictly positive (got {self.metadata['num_layers']})."
-            )
+        strictly_positive_keys = ["num_neighbors", "num_layers"]
+        for key in strictly_positive_keys:
+            if self.metadata[key] <= 0:
+                raise ValueError(
+                    f"Invalid metadata: '{key}' must be strictly positive "
+                    f"(got {self.metadata[key]})."
+                )
 
     def load_model(self) -> None:
         extra_files = {"metadata.json": ""}
