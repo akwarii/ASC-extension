@@ -1,157 +1,48 @@
-#### Python Modifier Name ####
+#### Atomic Structure Classification ####
 # Description of your Python-based modifier.
 
-import math
+import json
 import os
 from collections.abc import Generator
 
 import torch
-import torch.nn as nn
+from torch.export.passes import move_to_device_pass
 from ovito.data import DataCollection
 from ovito.pipeline import ModifierInterface
 from ovito.traits import FilePath
-from torch import Tensor
 from torch_geometric.data import Data
 from torch_geometric.loader import NeighborLoader
-from torch_geometric.nn import Linear
-from torch_geometric.utils import scatter
 from traits.api import Bool, Enum, Property, Range, cached_property, observe
 
-# TODO currently, dependencies from the main code are not used to keep a standalone modifier
-# Instead, needed classes are redefined in this file. This is not ideal, but it allows us to
-# test the modifier without needing to export a model eg, with torchscript. The best solution
-# would be to find a way to import the model definition from the main code without importing
-# all dependencies, but this is non-trivial and may require changes to the main code structure.
+#! Note to devs: Do not use assertions in this code as they will make OVITO crash when raised.
+#! Instead, raise appropriate exceptions with informative error messages.
 
 chemical_symbols = [
     # 0
-    "X",
+    'X',
     # 1
-    "H",
-    "He",
+    'H', 'He',
     # 2
-    "Li",
-    "Be",
-    "B",
-    "C",
-    "N",
-    "O",
-    "F",
-    "Ne",
+    'Li', 'Be', 'B', 'C', 'N', 'O', 'F', 'Ne',
     # 3
-    "Na",
-    "Mg",
-    "Al",
-    "Si",
-    "P",
-    "S",
-    "Cl",
-    "Ar",
+    'Na', 'Mg', 'Al', 'Si', 'P', 'S', 'Cl', 'Ar',
     # 4
-    "K",
-    "Ca",
-    "Sc",
-    "Ti",
-    "V",
-    "Cr",
-    "Mn",
-    "Fe",
-    "Co",
-    "Ni",
-    "Cu",
-    "Zn",
-    "Ga",
-    "Ge",
-    "As",
-    "Se",
-    "Br",
-    "Kr",
+    'K', 'Ca', 'Sc', 'Ti', 'V', 'Cr', 'Mn', 'Fe', 'Co', 'Ni', 'Cu', 'Zn',
+    'Ga', 'Ge', 'As', 'Se', 'Br', 'Kr',
     # 5
-    "Rb",
-    "Sr",
-    "Y",
-    "Zr",
-    "Nb",
-    "Mo",
-    "Tc",
-    "Ru",
-    "Rh",
-    "Pd",
-    "Ag",
-    "Cd",
-    "In",
-    "Sn",
-    "Sb",
-    "Te",
-    "I",
-    "Xe",
+    'Rb', 'Sr', 'Y', 'Zr', 'Nb', 'Mo', 'Tc', 'Ru', 'Rh', 'Pd', 'Ag', 'Cd',
+    'In', 'Sn', 'Sb', 'Te', 'I', 'Xe',
     # 6
-    "Cs",
-    "Ba",
-    "La",
-    "Ce",
-    "Pr",
-    "Nd",
-    "Pm",
-    "Sm",
-    "Eu",
-    "Gd",
-    "Tb",
-    "Dy",
-    "Ho",
-    "Er",
-    "Tm",
-    "Yb",
-    "Lu",
-    "Hf",
-    "Ta",
-    "W",
-    "Re",
-    "Os",
-    "Ir",
-    "Pt",
-    "Au",
-    "Hg",
-    "Tl",
-    "Pb",
-    "Bi",
-    "Po",
-    "At",
-    "Rn",
+    'Cs', 'Ba', 'La', 'Ce', 'Pr', 'Nd', 'Pm', 'Sm', 'Eu', 'Gd', 'Tb', 'Dy',
+    'Ho', 'Er', 'Tm', 'Yb', 'Lu',
+    'Hf', 'Ta', 'W', 'Re', 'Os', 'Ir', 'Pt', 'Au', 'Hg', 'Tl', 'Pb', 'Bi',
+    'Po', 'At', 'Rn',
     # 7
-    "Fr",
-    "Ra",
-    "Ac",
-    "Th",
-    "Pa",
-    "U",
-    "Np",
-    "Pu",
-    "Am",
-    "Cm",
-    "Bk",
-    "Cf",
-    "Es",
-    "Fm",
-    "Md",
-    "No",
-    "Lr",
-    "Rf",
-    "Db",
-    "Sg",
-    "Bh",
-    "Hs",
-    "Mt",
-    "Ds",
-    "Rg",
-    "Cn",
-    "Nh",
-    "Fl",
-    "Mc",
-    "Lv",
-    "Ts",
-    "Og",
-]
+    'Fr', 'Ra', 'Ac', 'Th', 'Pa', 'U', 'Np', 'Pu', 'Am', 'Cm', 'Bk',
+    'Cf', 'Es', 'Fm', 'Md', 'No', 'Lr',
+    'Rf', 'Db', 'Sg', 'Bh', 'Hs', 'Mt', 'Ds', 'Rg', 'Cn', 'Nh', 'Fl', 'Mc',
+    'Lv', 'Ts', 'Og',
+]  # fmt: off
 atomic_numbers = {symbol: Z for Z, symbol in enumerate(chemical_symbols)}
 
 
@@ -257,8 +148,6 @@ class PeriodicKNN:
         Returns:
             A PyG Data object with positions, edge index, distances and cosine of the angles.
         """
-        assert ovito_data.cell is not None, "The input structure must have a cell defined."
-
         if selection is None:
             selection = torch.arange(ovito_data.particles.count)
 
@@ -279,319 +168,14 @@ class PeriodicKNN:
         return pyg_data
 
 
-class RadialBesselBasis(nn.Module):
-    r"""Radial Bessel basis, as proposed in Gasteiger et al (2022). Directional Message Passing for
-    Molecular Graphs (arXiv:2003.03123).
-
-    Args:
-        num_radial: The number of radial basis functions.
-        stop: The cutoff value for scaling the distance.
-        trainable: Whether to train the frequencies :math:`n \pi`.
-    """
-
-    def __init__(
-        self,
-        num_radial: int = 8,
-        stop: float = 6.0,
-        *,
-        trainable: bool = True,
-    ) -> None:
-        super().__init__()
-
-        self.num_radial = num_radial
-        self.trainable = trainable
-        self.r_max = stop
-
-        self.freq = torch.nn.Parameter(torch.empty(num_radial))
-
-        self.reset_parameters()
-
-    def reset_parameters(self) -> None:
-        """Reinitialize learnable parameters."""
-        with torch.no_grad():
-            torch.arange(1, self.freq.numel() + 1, out=self.freq).mul_(math.pi)
-        self.freq.requires_grad_(self.trainable)
-
-    def forward(self, x: Tensor) -> Tensor:
-        """Evaluate Bessel Basis for input x.
-
-        Args:
-            x: Input tensor.
-
-        Returns:
-            Tensor: Radial Bessel basis (shape [num_edges, 1, num_radial]).
-        """
-        inv_r_max = 1.0 / self.r_max
-        prefactor = 2.0 * inv_r_max
-        x_expanded = x.unsqueeze(-1)
-        sin_arg = self.freq * x_expanded * inv_r_max
-        return torch.sin(sin_arg).mul_(prefactor).div_(x_expanded)
-
-    def __repr__(self) -> str:
-        return f"{self.__class__.__name__}(num_radial={self.num_radial}, stop={self.r_max})"
-
-
-class PaiNNRadial(nn.Module):
-    """Rotation invariant radial filter that processes the distance between neighbors.
-
-    Args:
-        num_radial: Number of radial basis functions.
-        cutoff: Cutoff distance for the radial basis functions.
-        hidden_channels: Dimensionality of the hidden scalar features.
-    """
-
-    def __init__(self, num_radial: int, hidden_channels: int, cutoff: float = 6.0) -> None:
-        super().__init__()
-        self.num_radial = num_radial
-        self.cutoff = cutoff
-        self.hidden_channels = hidden_channels
-
-        self.rbf_filter = nn.Sequential(
-            RadialBesselBasis(num_radial, cutoff),
-            Linear(num_radial, 3 * hidden_channels),  # we split into 3 parts later
-        )
-
-    def forward(self, dist_mag: Tensor) -> Tensor:
-        """Forward pass for the radial filter.
-
-        Args:
-            dist_mag: Distance magnitudes (shape [num_edges, 1]).
-        """
-        return self.rbf_filter(dist_mag)
-
-    def __repr__(self) -> str:
-        return f"{self.__class__.__name__}({str(self.rbf_filter)[1:-1]})"
-
-
-class PaiNNMessage(nn.Module):
-    """PaiNN message block. It processes scalar and vector features together, generating messages
-    for both streams.
-
-    Args:
-        hidden_channels: Dimensionality of the hidden scalar features.
-        dropout: Dropout rate for the internal MLP.
-        scale_factor: Scaling factor for the message passing. To avoid exploding gradients, it is
-            recommended to set this to 1 / num_neighbors.
-    """
-
-    def __init__(
-        self, hidden_channels: int, dropout: float = 0.1, scale_factor: float = 1.0
-    ) -> None:
-        super().__init__()
-        self.hidden_channels = hidden_channels
-        self.scale_factor = scale_factor
-        self.dropout = dropout
-
-        self.phi = nn.Sequential(
-            Linear(hidden_channels, hidden_channels),
-            nn.SiLU(inplace=True),
-            nn.Dropout(dropout),
-            Linear(hidden_channels, 3 * hidden_channels),
-        )
-        self.rms_norm = nn.RMSNorm(hidden_channels)
-
-    def forward(
-        self, s: Tensor, v: Tensor, edge_index: Tensor, rbf_filter: Tensor, edge_vector: Tensor
-    ) -> tuple[Tensor, Tensor]:
-        """Forward pass for the message block. The variable names are chosen to reflect the
-        original PaiNN paper.
-
-        Args:
-            s: Scalar features (shape [num_nodes, 1, hidden_channels]).
-            v: Vector features (shape [num_nodes, 3, hidden_channels]).
-            edge_index: Edge indices (shape [2, num_edges]).
-            rbf_filter: Radial filter (shape [num_edges, 1, 3 * hidden_channels]).
-            edge_vector: Distance unit vectors (shape [num_edges, 3]).
-        """
-        assert (
-            rbf_filter.shape[-1] == 3 * self.hidden_channels
-        ), "Edge filter output dimension must be 3x hidden_channels"
-
-        i, j = edge_index
-
-        s_norm = self.rms_norm(s)
-
-        # since linear and gather are commutative, we can apply the linear layer first
-        phi_s = self.phi(s_norm)
-        filter = phi_s[j] * rbf_filter
-
-        # split into scalar, vector, and gate
-        m_s, m_vv, m_vs = torch.chunk(filter, chunks=3, dim=-1)
-
-        # Scalar message
-        ds = scatter(m_s, i, dim=0, dim_size=s.size(0), reduce="sum")
-
-        # Vector message
-        # gate = v[j] * m_vv + m_vs * edge_vector[..., None]
-        gate = torch.einsum("edc, ec -> edc", v[j], m_vv.squeeze(1))
-        gate.addcmul_(edge_vector.unsqueeze(-1), m_vs)
-
-        dv = scatter(gate, i, dim=0, dim_size=v.size(0), reduce="sum")
-
-        # Residual
-        s = s + ds * self.scale_factor
-        v = v + dv * self.scale_factor
-
-        return s, v
-
-
-class PaiNNUpdate(nn.Module):
-    """PaiNN update block. It takes the output from the message block and updates the scalar and
-    vector features.
-
-    Args:
-        hidden_channels: Dimensionality of the hidden scalar features.
-        dropout: Dropout rate for the internal MLP.
-    """
-
-    def __init__(self, hidden_channels: int, dropout: float = 0.1) -> None:
-        super().__init__()
-        self.hidden_channels = hidden_channels
-        self.dropout = dropout
-
-        self.update_net = nn.Sequential(
-            Linear(2 * hidden_channels, hidden_channels),
-            nn.SiLU(inplace=True),
-            nn.Dropout(dropout),
-            Linear(hidden_channels, 3 * hidden_channels),
-        )
-        self.v_proj = Linear(hidden_channels, hidden_channels * 2, bias=False)
-        self.rms_norm = nn.RMSNorm(hidden_channels)
-
-    def forward(self, s: Tensor, v: Tensor) -> tuple[Tensor, Tensor]:
-        """Forward pass for the update block.
-
-        Args:
-            s: Scalar features (shape [num_nodes, 1, hidden_channels]).
-            v: Vector features (shape [num_nodes, 3, hidden_channels]).
-        """
-        s_norm = self.rms_norm(s)
-
-        u, w = torch.chunk(self.v_proj(v), chunks=2, dim=-1)
-        w_norm = w.pow(2).sum(dim=1, keepdim=True).clamp_min(1e-8).sqrt()
-
-        context = torch.cat([s_norm, w_norm], dim=-1)
-        filter = self.update_net(context)
-
-        a_ss, a_vv, a_sv = torch.chunk(filter, chunks=3, dim=-1)
-
-        # scaling functions are used as nonlinearity
-        dv = a_vv * u
-
-        # ds = a_ss + a_sv * torch.sum(u * w, dim=1, keepdim=True)
-        uw_dot = torch.einsum("ndc, ndc -> nc", u, w).unsqueeze(1)
-        ds = torch.addcmul(a_ss, a_sv, uw_dot)
-
-        # Residuals
-        s = s + ds
-        v = v + dv
-
-        return s, v
-
-
-class PaiNNHead(nn.Module):
-    """PaiNN head block. It takes the scalar features and produces predictions.
-
-    Args:
-        hidden_channels: Dimensionality of the hidden scalar features.
-        num_classes: Number of output classes.
-        dropout: Dropout rate for the internal MLP.
-    """
-
-    def __init__(self, hidden_channels: int, out_channels: int, dropout: float = 0.1) -> None:
-        super().__init__()
-        self.hidden_channels = hidden_channels
-        self.num_classes = out_channels
-
-        self.mlp = nn.Sequential(
-            Linear(hidden_channels, hidden_channels),
-            nn.SiLU(inplace=True),
-            nn.Dropout(dropout),
-            Linear(hidden_channels, out_channels),
-        )
-
-    def forward(self, s: Tensor) -> Tensor:
-        """Forward pass for the head block. It only uses the scalar features for prediction.
-
-        Args:
-            s: Scalar features (shape [num_nodes, hidden_channels]).
-        """
-        return self.mlp(s)
-
-
-class PaiNN(nn.Module):
-    """PaiNN model adapted for classification tasks. It simply removes the final reduce to keep the
-    atomic representation.
-
-    Args:
-        num_classes: Number of output classes.
-        num_species: Number of unique atomic species (default 119 for all elements).
-        num_radial: Number of radial basis functions (default 4).
-        num_layers: Number of message-passing layers (default 3).
-        hidden_channels: Dimensionality of the hidden scalar features (default 128).
-        dropout: Dropout rate for the internal MLPs (default 0.1).
-        scale_factor: Scaling factor for the message passing (default 1.0). To avoid exploding
-            gradients, it is recommended to set this to 1 / num_neighbors.
-    """
-
-    def __init__(
-        self,
-        out_channels: int,
-        num_species: int = 119,
-        num_radial: int = 4,
-        num_layers: int = 1,
-        hidden_channels: int = 16,
-        dropout: float = 0.1,
-        scale_factor: float = 1.0,
-    ) -> None:
-        super().__init__()
-        self.hidden_channels = hidden_channels
-        self.num_layers = num_layers
-        self.dropout = dropout
-        self.scale_factor = scale_factor
-
-        self.embedding = nn.Embedding(num_species, hidden_channels)
-        self.rbf = PaiNNRadial(num_radial, hidden_channels, cutoff=6.0)
-
-        # Separate message and update blocks for better modularity
-        self.message_blocks = nn.ModuleList(
-            [PaiNNMessage(hidden_channels, dropout, scale_factor) for _ in range(num_layers)]
-        )
-        self.update_blocks = nn.ModuleList(
-            [PaiNNUpdate(hidden_channels, dropout) for _ in range(num_layers)]
-        )
-        self.head = PaiNNHead(hidden_channels, out_channels, dropout)
-
-    def forward(self, x: Tensor, edge_index: Tensor, edge_attr: Tensor) -> Tensor:
-        """Forward pass for the PaiNN model.
-
-        Args:
-            x: Node features (shape [num_nodes, num_features]).
-            edge_index: Edge indices (shape [2, num_edges]).
-            edge_attr: Edge features (distance vectors) (shape [num_edges, 3]).
-        """
-        # dist_mag = torch.linalg.norm(edge_attr, dim=1, keepdim=True)
-        dist_mag = edge_attr.pow(2).sum(dim=1, keepdim=True).clamp_min(1e-8).sqrt()
-        edge_unit_vec = edge_attr / dist_mag
-
-        s = self.embedding(x).unsqueeze(1)
-        v = torch.zeros(s.size(0), 3, s.size(2), device=s.device)
-
-        rbf_filter = self.rbf(dist_mag)
-        for message, update in zip(self.message_blocks, self.update_blocks):
-            s, v = message(s, v, edge_index, rbf_filter, edge_unit_vec)
-            s, v = update(s, v)
-
-        out = self.head(s.squeeze(1))
-
-        return out
-
-
 class AtomicStructureClassification(ModifierInterface):
     ckpt_file = FilePath(
         label="Model file",
         ovito_file_exists=True,
-        ovito_file_filter=["PyTorch checkpoint files (*.ckpt)", "All files (*)"],
+        ovito_file_filter=[
+            "PyTorch model (*.pt2)",
+            "All files (*)",
+        ],
     )
 
     if torch.cuda.is_available():
@@ -623,32 +207,51 @@ class AtomicStructureClassification(ModifierInterface):
 
     @observe("device")
     def _on_device_change(self, event) -> None:
-        self.model.to(self.device)
+        if hasattr(self, "_program"):
+            self._program = move_to_device_pass(self._program, self.device)
+            self.model = self._program.module()
 
+    # TODO currently, a compiled model is not replaced with an uncompiled one if the user unchecks the "Model compilation" checkbox.
     @observe("should_compile")
     def _on_compile_change(self, event) -> None:
-        if hasattr(self, "model"):
+        if hasattr(self, "_program"):
+            self.model = self._program.module()
             self.compile_model()
 
     @cached_property
     def _get_batch_size(self) -> int:
         return int(2**self._exponent)
 
-    def load_model(self) -> None:
-        # TODO find how to load the model with minimal dependencies. Options seems to be to export the use torchscript
-        # or to import the model definition in this file, which is not ideal. For now we just fallback to a dummy model
-        # to test the modifier workflow without needing to export a model.
-        try:
-            self.model: torch.nn.Module = torch.load(
-                self.ckpt_file, map_location=self.device, weights_only=False
-            )
-        except Exception:
-            print("Model loading is not implemented. Using untrained model for testing.")
-            self.model = PaiNN(out_channels=10)
+    def _validate_metadata(self) -> None:
+        required_keys = set(["num_neighbors", "num_layers"])
+        actual_keys = set(self.metadata.keys())
 
-        self.model = self.model.to(self.device)
-        self.compile_model()
+        missing_keys = required_keys - actual_keys
+        if missing_keys:
+            raise ValueError(f"Metadata is missing required keys: {missing_keys}")
+
+        if self.metadata["num_neighbors"] <= 0:
+            raise ValueError(
+                f"Invalid metadata: 'num_neighbors' must be strictly positive (got {self.metadata['num_neighbors']})."
+            )
+        if self.metadata["num_layers"] <= 0:
+            raise ValueError(
+                f"Invalid metadata: 'num_layers' must be strictly positive (got {self.metadata['num_layers']})."
+            )
+
+    def load_model(self) -> None:
+        extra_files = {"metadata.json": ""}
+        program = torch.export.load(self.ckpt_file, extra_files=extra_files)
+
+        self.metadata = json.loads(extra_files["metadata.json"])
+        self._validate_metadata()
+
+        # Move the loaded program to the specified device before extracting the module
+        self._program = move_to_device_pass(program, self.device)
+        self.model = self._program.module()
         self.model.eval()
+        
+        self.compile_model()
 
     def compile_model(self) -> None:
         if not self.should_compile:
@@ -690,10 +293,9 @@ class AtomicStructureClassification(ModifierInterface):
         # Don't run the modifier if no checkpoint file is provided
         if not self.ckpt_file:
             return
-
-        num_neighbors = 12  # TODO placeholder, should be extracted from checkpoint
-        backend = "freud" if self.use_freud else "ovito"
-        knn = PeriodicKNN(k=num_neighbors)
+        
+        if data.cell is None:
+            raise ValueError("The input structure must have a defined unit cell.")
 
         selected = torch.arange(data.particles.count)
         if self.only_selected:
@@ -709,15 +311,17 @@ class AtomicStructureClassification(ModifierInterface):
 
             selected = torch.argwhere(mask).squeeze()
 
-        if not hasattr(self, "model"):
-            self.load_model()
-            
+        num_neighbors: int = self.metadata["num_neighbors"]
+        num_layers: int = self.metadata["num_layers"]
+        backend = "freud" if self.use_freud else "ovito"
+
         # TODO cache the graph if the structure doesn't change
+        knn = PeriodicKNN(k=num_neighbors)
         graph = knn.convert(data, selection=selected, backend=backend)
 
         loader = NeighborLoader(
             graph,
-            num_neighbors=[-1] * self.model.num_layers,  # type: ignore
+            num_neighbors=[num_neighbors] * num_layers,
             batch_size=min(self.batch_size, len(graph)),
             shuffle=False,
             num_workers=self.num_workers,
