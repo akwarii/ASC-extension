@@ -6,6 +6,7 @@ import os
 from collections.abc import Generator
 
 import torch
+from torch import Tensor
 from torch.export.passes import move_to_device_pass
 from ovito.data import DataCollection
 from ovito.modifiers import ExpandSelectionModifier
@@ -47,83 +48,54 @@ chemical_symbols = [
 atomic_numbers = {symbol: Z for Z, symbol in enumerate(chemical_symbols)}
 
 
-def get_atomic_numbers(data: DataCollection) -> torch.Tensor:
-    """Convert a tensor of type ids to atomic numbers using a mapping.
-
-    Args:
-        data: The OVITO DataCollection object.
-
-    Returns:
-        A tensor of shape (num_atoms,) containing the atomic numbers of the atoms.
-    """
-    ptypes = data.particles_.particle_types_
-    type_mapper = {t.id: atomic_numbers.get(t.name, 0) for t in ptypes.types}
-    type_id = torch.from_numpy(ptypes[...]).long()
-
-    max_type_id = int(type_id.max().item())
-    mapping_tensor = torch.zeros(max_type_id + 1, dtype=torch.long)
-
-    for t_id, z in type_mapper.items():
-        mapping_tensor[t_id] = z
-
-    return mapping_tensor[type_id]
-
-
 class PeriodicKNN:
-    """Test of a periodic knn using Freud."""
-
-    def __init__(self, k: int = 20, **kwargs) -> None:
-        if k < 1:
+    """Utility class to convert an OVITO DataCollection to a PyG Data object
+    using periodic KNN graph construction.
+    
+    Args:
+        num_neighbors: The number of nearest neighbors to connect to each atom in the graph.
+    """
+    def __init__(self, num_neighbors: int = 20) -> None:
+        if num_neighbors < 1:
             raise ValueError("The number of neighbors must be greater than 0.")
 
-        self.k = k
+        self.num_neighbors = num_neighbors
+    
+    @staticmethod
+    def _get_atomic_numbers(data: DataCollection) -> Tensor:
+        """Convert a tensor of type ids to atomic numbers using a mapping.
 
-    def _get_graph_data_freud(
-        self, atoms: DataCollection, selection: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        from freud import AABBQuery, Box
+        Args:
+            data: The OVITO DataCollection object.
 
-        # Map OVITO particle types to atomic numbers
-        x = get_atomic_numbers(atoms)[selection]
+        Returns:
+            A tensor of shape (num_atoms,) containing the atomic numbers of the atoms.
+        """
+        ptypes = data.particles_.particle_types_
+        type_mapper = {t.id: atomic_numbers.get(t.name, 0) for t in ptypes.types}
+        type_id = torch.from_numpy(ptypes[...]).long()
 
-        # Extract data from OVITO DataCollection object
-        pos = atoms.particles.positions[...][selection]
-        cell_matrix = atoms.cell[...][:3, :3].T
+        max_type_id = int(type_id.max().item())
+        mapping_tensor = torch.zeros(max_type_id + 1, dtype=torch.long)
 
-        # Create Freud Box for PBC handling
-        box = Box.from_matrix(cell_matrix)
-        box.periodic = atoms.cell.pbc
+        for t_id, z in type_mapper.items():
+            mapping_tensor[t_id] = z
 
-        # Perform knn query
-        nq = AABBQuery(box, pos)
-        nlist = nq.query(pos, dict(num_neighbors=self.k, exclude_ii=True)).toNeighborList()
+        return mapping_tensor[type_id]
 
-        # Build edge index and attributes
-        q_idx = torch.from_numpy(nlist.query_point_indices.copy()).long()
-        p_idx = torch.from_numpy(nlist.point_indices.copy()).long()
-
-        edge_index = torch.stack([q_idx, p_idx])
-
-        pos_t = torch.from_numpy(pos).float()
-        diff_t = pos_t[p_idx] - pos_t[q_idx]
-        wrapped_diff = box.wrap(diff_t.numpy())
-        edge_attr = torch.from_numpy(wrapped_diff).float()
-
-        return x, edge_index, edge_attr
-
-    def _get_graph_data_ovito(
-        self, atoms: DataCollection, selection: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _get_graph_data(
+        self, atoms: DataCollection, selection: Tensor
+    ) -> tuple[Tensor, Tensor, Tensor]:
         from ovito.data import NearestNeighborFinder
 
-        x = get_atomic_numbers(atoms)[selection]
+        x = self._get_atomic_numbers(atoms)[selection]
 
-        finder = NearestNeighborFinder(self.k, atoms)
+        finder = NearestNeighborFinder(self.num_neighbors, atoms)
         indices, deltas = finder.find_all(indices=selection.tolist())
 
         # q_idx represents the central atoms (query points)
         # p_idx represents the neighbor atoms
-        q_idx = torch.arange(selection.shape[0]).view(-1, 1).expand(-1, self.k).flatten()
+        q_idx = torch.arange(selection.shape[0]).view(-1, 1).expand(-1, self.num_neighbors).flatten()
         p_idx = torch.from_numpy(indices).flatten().long()
 
         edge_index = torch.stack([q_idx, p_idx])
@@ -136,15 +108,13 @@ class PeriodicKNN:
     def convert(
         self,
         ovito_data: DataCollection,
-        selection: torch.Tensor | None = None,
-        backend: str = "ovito",
+        selection: Tensor | None = None,
     ) -> Data:
         """Convert a single atomic structure to a PyG Data object.
 
         Args:
             atoms_repr: An OVITO DataCollection.
             mask: A boolean tensor indicating which atoms to include in the graph.
-            backend: The backend to use for KNN computation.
 
         Returns:
             A PyG Data object with positions, edge index, distances and cosine of the angles.
@@ -152,12 +122,7 @@ class PeriodicKNN:
         if selection is None:
             selection = torch.arange(ovito_data.particles.count)
 
-        knn_method = {
-            "freud": self._get_graph_data_freud,
-            "ovito": self._get_graph_data_ovito,
-        }
-
-        x, edge_index, edge_attr = knn_method[backend](ovito_data, selection)
+        x, edge_index, edge_attr = self._get_graph_data(ovito_data, selection)
 
         pyg_data = Data(
             num_nodes=ovito_data.particles.count,
@@ -188,6 +153,7 @@ class AtomicStructureClassification(ModifierInterface):
 
     should_compile = Bool(True, label="Model compilation")
 
+    # Workaround for the fact that Range traits don't support power of 2 step values.
     _exponent = Range(low=0, value=10, label="Batch size exponent (2^x)")
     batch_size = Property(observe="_exponent", label="Batch size")
 
@@ -199,7 +165,6 @@ class AtomicStructureClassification(ModifierInterface):
         label="Data loading workers",
     )
 
-    use_freud = Bool(False, label="Use Freud backend\n(recommended for\nlarge systems)")
     only_selected = Bool(False, label="Only selected")
 
     @observe("ckpt_file")
@@ -263,7 +228,7 @@ class AtomicStructureClassification(ModifierInterface):
         self.model.compile(fullgraph=True, dynamic=True)
 
     @torch.inference_mode()
-    def inference(self, model, loader) -> Generator[float, None, torch.Tensor]:
+    def inference(self, model, loader) -> Generator[float, None, Tensor]:
         """Run inference on a single DataCollection object and return the predicted class indices for
         each particle.
 
@@ -276,7 +241,7 @@ class AtomicStructureClassification(ModifierInterface):
             batch = batch.to(self.device)
 
             with torch.autocast(device_type=self.device):
-                all_logits: torch.Tensor = model(batch.x, batch.edge_index, batch.edge_attr)
+                all_logits: Tensor = model(batch.x, batch.edge_index, batch.edge_attr)
                 target_logits = all_logits[: batch.batch_size]
                 out = torch.argmax(target_logits, dim=-1)
 
@@ -298,7 +263,6 @@ class AtomicStructureClassification(ModifierInterface):
 
         num_neighbors: int = self.metadata["num_neighbors"]
         num_layers: int = self.metadata["num_layers"]
-        backend = "freud" if self.use_freud else "ovito"
 
         selection = torch.arange(data.particles.count)
         expanded_selection = torch.arange(data.particles.count)
@@ -327,8 +291,8 @@ class AtomicStructureClassification(ModifierInterface):
             expanded_selection = torch.argwhere(expanded_mask).squeeze()
 
         # TODO cache the graph if the structure doesn't change
-        knn = PeriodicKNN(k=num_neighbors)
-        graph = knn.convert(data, selection=expanded_selection, backend=backend)
+        knn = PeriodicKNN(num_neighbors=num_neighbors)
+        graph = knn.convert(data, selection=expanded_selection)
 
         loader = NeighborLoader(
             graph,
@@ -337,7 +301,8 @@ class AtomicStructureClassification(ModifierInterface):
             batch_size=min(self.batch_size, len(selection)),
             shuffle=False,
             num_workers=self.num_workers,
-            pin_memory=True,
+            pin_memory=self.num_workers > 0 and self.device == "cuda",
+            multiprocessing_context="fork" if self.num_workers > 0 else None,
         )
 
         # default to -1 for unpredicted particles

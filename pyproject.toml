@@ -7,23 +7,23 @@ name = "ASC-extension"
 version = "0.0.1"
 description = "OVITO extension for the Atomic Structure Classification (ASC) library."
 keywords = ["ovito", "ovito-extension"]
-authors = [{name = "Gael Huynh", email = "gael.huynh@gmail.com"}, {name = "Dylan Bissuel", email = "dylan.bissuel@univ-lyon1.fr"}]
-maintainers = [{name = "Gael Huynh", email = "gael.huynh@gmail.com"}]
-license = {text = "MIT License"}
+authors = [
+    { name = "Gael Huynh", email = "gael.huynh@gmail.com" },
+    { name = "Dylan Bissuel", email = "dylan.bissuel@univ-lyon1.fr" },
+    { name = "David Rodney", email = "david.rodney@univ-lyon1.fr" },
+]
+maintainers = [{ name = "Gael Huynh", email = "gael.huynh@gmail.com" }]
+license = { text = "MIT License" }
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "ovito >= 3.15.0",
-    "freud-analysis>=3.4.0",
+    "ovito>=3.15.0",
     "torch>=2.0.0",
     "torch-geometric>=2.6.1",
 ]
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=7.0.0",
-    "pytest-cov>=4.0.0",
-]
+dev = ["pytest>=7.0.0", "pytest-cov>=4.0.0"]
 
 [project.urls]
 repository = "https://github.com/akwarii/ASC-extension.git"
