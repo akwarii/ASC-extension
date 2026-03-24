@@ -18,7 +18,7 @@ def test_knn_backends_consistency():
     data = pipeline.compute(3)
     
     k = 4
-    knn = PeriodicKNN(k=k)
+    knn = PeriodicKNN(num_neighbors=k)
     
     # Test for first frame
     graph_ovito = knn.convert(data, backend="ovito")
@@ -43,7 +43,7 @@ def test_knn_selection():
     # Select 2 atoms
     selection = torch.tensor([0, 2])
     k = 2
-    knn = PeriodicKNN(k=k)
+    knn = PeriodicKNN(num_neighbors=k)
     
     graph = knn.convert(data, selection=selection, backend="ovito")
     

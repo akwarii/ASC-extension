@@ -253,6 +253,11 @@ class AtomicStructureClassification(ModifierInterface):
 
         return predictions
 
+    # TODO add topk/confidence threshold options to return multiple predictions per particle
+    # This option should add more properties:
+    # - "ASC Confidence": the confidence score of the prediction (e.g. softmax probability)
+    # - "ASC Top K Structure": the top K predicted structure types (e.g. as a list of integers)
+    # - "ASC Structure Type": the predicted structure type (e.g. as an integer index)
     def modify(self, data: DataCollection, frame: int, **kwargs) -> Generator[float, None, None]:
         # Don't run the modifier if no checkpoint file is provided
         if not self.ckpt_file:
@@ -298,7 +303,7 @@ class AtomicStructureClassification(ModifierInterface):
             graph,
             num_neighbors=[num_neighbors] * num_layers,
             input_nodes=selection,
-            batch_size=min(self.batch_size, len(selection)),
+            batch_size=min(self.batch_size, selection.numel()),
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=self.num_workers > 0 and self.device == "cuda",
