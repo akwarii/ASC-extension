@@ -8,6 +8,7 @@ from collections.abc import Generator
 import torch
 from torch.export.passes import move_to_device_pass
 from ovito.data import DataCollection
+from ovito.modifiers import ExpandSelectionModifier
 from ovito.pipeline import ModifierInterface
 from ovito.traits import FilePath
 from torch_geometric.data import Data
@@ -190,7 +191,7 @@ class AtomicStructureClassification(ModifierInterface):
     _exponent = Range(low=0, value=10, label="Batch size exponent (2^x)")
     batch_size = Property(observe="_exponent", label="Batch size")
 
-    __cpu_count = os.cpu_count() or 1
+    __cpu_count = os.cpu_count() or 0
     num_workers = Range(
         low=0,
         high=__cpu_count,
@@ -248,7 +249,7 @@ class AtomicStructureClassification(ModifierInterface):
         self._program = move_to_device_pass(program, self.device)
         self.model = self._program.module()
         self.model.eval()
-        
+
         self.compile_model()
 
     def compile_model(self) -> None:
@@ -291,11 +292,16 @@ class AtomicStructureClassification(ModifierInterface):
         # Don't run the modifier if no checkpoint file is provided
         if not self.ckpt_file:
             return
-        
+
         if data.cell is None:
             raise ValueError("The input structure must have a defined unit cell.")
 
-        selected = torch.arange(data.particles.count)
+        num_neighbors: int = self.metadata["num_neighbors"]
+        num_layers: int = self.metadata["num_layers"]
+        backend = "freud" if self.use_freud else "ovito"
+
+        selection = torch.arange(data.particles.count)
+        expanded_selection = torch.arange(data.particles.count)
         if self.only_selected:
             # No selection modifier is applied
             if data.particles.selection is None:
@@ -307,20 +313,28 @@ class AtomicStructureClassification(ModifierInterface):
             if not mask.sum():
                 return
 
-            selected = torch.argwhere(mask).squeeze()
+            selection = torch.argwhere(mask).squeeze()
 
-        num_neighbors: int = self.metadata["num_neighbors"]
-        num_layers: int = self.metadata["num_layers"]
-        backend = "freud" if self.use_freud else "ovito"
+            # Expand the selection to include neighbors of selected particles
+            # This avoid edge cases classifying isolated/surface atoms
+            data.apply(
+                ExpandSelectionModifier(
+                    mode=ExpandSelectionModifier.ExpansionMode.Nearest,
+                    num_neighbors=num_neighbors,
+                )
+            )
+            expanded_mask = torch.from_numpy(data.particles.selection[...]).bool()
+            expanded_selection = torch.argwhere(expanded_mask).squeeze()
 
         # TODO cache the graph if the structure doesn't change
         knn = PeriodicKNN(k=num_neighbors)
-        graph = knn.convert(data, selection=selected, backend=backend)
+        graph = knn.convert(data, selection=expanded_selection, backend=backend)
 
         loader = NeighborLoader(
             graph,
             num_neighbors=[num_neighbors] * num_layers,
-            batch_size=min(self.batch_size, len(graph)),
+            input_nodes=selection,
+            batch_size=min(self.batch_size, len(selection)),
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
@@ -329,7 +343,7 @@ class AtomicStructureClassification(ModifierInterface):
         # default to -1 for unpredicted particles
         results = torch.full((data.particles.count,), -1, dtype=torch.long)
         out = yield from self.inference(self.model, loader)
-        results[selected] = out
+        results[selection] = out
 
         # Placeholder for logic to apply results to the data collection
         data.particles_.create_property("ASC Structure Type", dtype=int, data=results)
