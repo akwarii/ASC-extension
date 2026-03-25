@@ -51,16 +51,17 @@ atomic_numbers = {symbol: Z for Z, symbol in enumerate(chemical_symbols)}
 class PeriodicKNN:
     """Utility class to convert an OVITO DataCollection to a PyG Data object
     using periodic KNN graph construction.
-    
+
     Args:
         num_neighbors: The number of nearest neighbors to connect to each atom in the graph.
     """
+
     def __init__(self, num_neighbors: int = 20) -> None:
         if num_neighbors < 1:
             raise ValueError("The number of neighbors must be greater than 0.")
 
         self.num_neighbors = num_neighbors
-    
+
     @staticmethod
     def _get_atomic_numbers(data: DataCollection) -> Tensor:
         """Convert a tensor of type ids to atomic numbers using a mapping.
@@ -95,7 +96,9 @@ class PeriodicKNN:
 
         # q_idx represents the central atoms (query points)
         # p_idx represents the neighbor atoms
-        q_idx = torch.arange(selection.shape[0]).view(-1, 1).expand(-1, self.num_neighbors).flatten()
+        q_idx = (
+            torch.arange(selection.shape[0]).view(-1, 1).expand(-1, self.num_neighbors).flatten()
+        )
         p_idx = torch.from_numpy(indices).flatten().long()
 
         edge_index = torch.stack([q_idx, p_idx])
@@ -134,7 +137,7 @@ class PeriodicKNN:
         return pyg_data
 
 
-class AtomicStructureClassification(ModifierInterface):
+class ASCModifier(ModifierInterface):
     ckpt_file = FilePath(
         label="Model file",
         ovito_file_exists=True,
@@ -151,6 +154,7 @@ class AtomicStructureClassification(ModifierInterface):
     else:
         device = "cpu"
 
+    _is_compiled = False
     should_compile = Bool(True, label="Model compilation")
 
     # Workaround for the fact that Range traits don't support power of 2 step values.
@@ -169,6 +173,11 @@ class AtomicStructureClassification(ModifierInterface):
 
     @observe("ckpt_file")
     def _on_ckpt_file_change(self, event) -> None:
+        if not self.ckpt_file:
+            del self._program
+            del self.model
+            del self.metadata
+            return
         self.load_model()
 
     @observe("device")
@@ -203,6 +212,30 @@ class AtomicStructureClassification(ModifierInterface):
                     f"(got {self.metadata[key]})."
                 )
 
+    def _model_warmup(self, optimized_module, *args) -> None:
+        example = (
+            torch.randint(low=1, high=118, size=(10,), device=self.device),
+            torch.randint(low=0, high=10, size=(2, 30), device=self.device, dtype=torch.long),
+            torch.randn(30, 3, device=self.device),
+        )
+
+        with torch.no_grad():
+            for _ in range(5):
+                optimized_module(*example)
+
+    def compile_model(self) -> None:
+        if not self.should_compile:
+            self._is_compiled = False
+            return
+
+        if self.device != "cuda" or torch.cuda.get_device_capability() < (7, 0):
+            self._is_compiled = False
+            return
+
+        self.model.compile(fullgraph=True, dynamic=True)
+        self._model_warmup(self.model)
+        self._is_compiled = True
+
     def load_model(self) -> None:
         extra_files = {"metadata.json": ""}
         program = torch.export.load(self.ckpt_file, extra_files=extra_files)
@@ -213,19 +246,8 @@ class AtomicStructureClassification(ModifierInterface):
         # Move the loaded program to the specified device before extracting the module
         self._program = move_to_device_pass(program, self.device)
         self.model = self._program.module()
-        self.model.eval()
 
         self.compile_model()
-
-    def compile_model(self) -> None:
-        if not self.should_compile:
-            return
-
-        if self.device != "cuda" or torch.cuda.get_device_capability() < (7, 0):
-            self.should_compile = False
-            return
-
-        self.model.compile(fullgraph=True, dynamic=True)
 
     @torch.inference_mode()
     def inference(self, model, loader) -> Generator[float, None, Tensor]:
@@ -248,7 +270,13 @@ class AtomicStructureClassification(ModifierInterface):
             graph_preds.append(out.to("cpu", non_blocking=True))
             yield (i / len(loader))
 
-        torch.cuda.synchronize()
+        if self.device == "cuda":
+            torch.cuda.synchronize()
+        elif self.device == "mps":
+            torch.mps.synchronize()
+        else:
+            pass
+
         predictions = torch.cat(graph_preds, dim=0)
 
         return predictions
@@ -259,7 +287,6 @@ class AtomicStructureClassification(ModifierInterface):
     # - "ASC Top K Structure": the top K predicted structure types (e.g. as a list of integers)
     # - "ASC Structure Type": the predicted structure type (e.g. as an integer index)
     def modify(self, data: DataCollection, frame: int, **kwargs) -> Generator[float, None, None]:
-        # Don't run the modifier if no checkpoint file is provided
         if not self.ckpt_file:
             return
 
