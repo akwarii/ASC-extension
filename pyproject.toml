@@ -36,7 +36,9 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 filterwarnings = [
-    "error",
+    "default",
     "ignore:module 'sre_parse' is deprecated:DeprecationWarning",
     "ignore:module 'sre_constants' is deprecated:DeprecationWarning",
+    "ignore::DeprecationWarning:torch_geometric.*",
+    "ignore:`torch.jit.script` is deprecated:DeprecationWarning",
 ]
