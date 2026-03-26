@@ -1,57 +1,57 @@
+from pathlib import Path
+from typing import Any
+from collections.abc import Generator
+
+from ovito.pipeline import Pipeline
 import pytest
 import torch
 from ovito.io import import_file
-from ASC_extension import PeriodicKNN, get_atomic_numbers
+from ASC_extension import PeriodicKNN
 
-def test_atomic_numbers():
-    pipeline = import_file("tests/data.xyz")
+
+@pytest.fixture
+def data_path() -> Path:
+    return Path(__file__).parent / "fixtures" / "Si_traj.xyz"
+
+
+@pytest.fixture
+def knn() -> Generator[PeriodicKNN, Any, None]:
+    yield PeriodicKNN(num_neighbors=4)
+
+
+@pytest.fixture
+def pipeline(data_path: Path) -> Generator[Pipeline, Any, None]:
+    yield import_file(data_path)
+
+
+def test_atomic_numbers(pipeline: Pipeline, knn: PeriodicKNN) -> None:
     data = pipeline.compute()
-    
-    z = get_atomic_numbers(data)
+
+    z = knn._get_atomic_numbers(data)
     assert z.shape == (data.particles.count,)
-    # In data.xyz, all atoms are Si (Z=14)
     assert torch.all(z == 14)
 
-def test_knn_backends_consistency():
-    pipeline = import_file("tests/data.xyz")
-    # Frame 3 has 8 atoms and a cubic lattice
-    data = pipeline.compute(3)
-    
-    k = 4
-    knn = PeriodicKNN(num_neighbors=k)
-    
-    # Test for first frame
-    graph_ovito = knn.convert(data, backend="ovito")
-    graph_freud = knn.convert(data, backend="freud")
-    
-    assert graph_ovito.num_nodes == data.particles.count
-    assert graph_freud.num_nodes == data.particles.count
-    
-    assert graph_ovito.edge_index.shape[1] == data.particles.count * k
-    assert graph_freud.edge_index.shape[1] == data.particles.count * k
-    
-    # Check if they have the same edges (order might differ)
-    dist_ovito = torch.norm(graph_ovito.edge_attr, dim=1).sort().values
-    dist_freud = torch.norm(graph_freud.edge_attr, dim=1).sort().values
-    
-    assert torch.allclose(dist_ovito, dist_freud, atol=1e-4)
 
-def test_knn_selection():
-    pipeline = import_file("tests/data.xyz")
+def test_knn_without_selection(pipeline: Pipeline, knn: PeriodicKNN) -> None:
     data = pipeline.compute()
-    
-    # Select 2 atoms
-    selection = torch.tensor([0, 2])
-    k = 2
-    knn = PeriodicKNN(num_neighbors=k)
-    
-    graph = knn.convert(data, selection=selection, backend="ovito")
-    
-    # x should contain ALL atoms
-    assert graph.x.shape[0] == data.particles.count
-    # num_nodes should be total atoms
+    graph = knn.convert(data)
+
+    assert graph.edge_index is not None
     assert graph.num_nodes == data.particles.count
-    
-    # edge_index should use global indices from selection
-    assert torch.all(torch.isin(graph.edge_index[0].unique(), selection))
-    assert graph.edge_index.shape[1] == len(selection) * k
+    assert graph.edge_index.shape[1] == data.particles.count * knn.num_neighbors
+
+
+def test_knn_selection(pipeline: Pipeline, knn: PeriodicKNN) -> None:
+    data = pipeline.compute()
+
+    selection = torch.tensor([0, 2])
+    num_selected = selection.numel()
+
+    graph = knn.convert(data, selection=selection)
+
+    assert graph.x is not None
+    assert graph.edge_index is not None
+
+    assert graph.num_nodes == num_selected
+    assert graph.x.shape[0] == num_selected
+    assert graph.edge_index.shape[1] == num_selected * knn.num_neighbors
