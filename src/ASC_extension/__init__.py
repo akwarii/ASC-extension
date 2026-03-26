@@ -128,7 +128,7 @@ class PeriodicKNN:
         x, edge_index, edge_attr = self._get_graph_data(ovito_data, selection)
 
         pyg_data = Data(
-            num_nodes=ovito_data.particles.count,
+            num_nodes=selection.numel(),
             x=x,
             edge_index=edge_index,
             edge_attr=edge_attr,
