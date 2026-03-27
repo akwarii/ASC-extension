@@ -326,36 +326,24 @@ class ASCModifier(ModifierInterface):
         knn = PeriodicKNN(num_neighbors=num_neighbors)
         graph = knn.convert(data, selection=expanded_selection)
 
-        try:
-            loader = NeighborLoader(
-                graph,
-                num_neighbors=[num_neighbors] * num_layers,
-                input_nodes=selection,
-                batch_size=min(self.batch_size, selection.numel()),
-                shuffle=False,
-                num_workers=self.num_workers,
-                pin_memory=self.num_workers > 0 and self.device == "cuda",
-                multiprocessing_context="fork" if self.num_workers > 0 else None,
-            )
+        loader = NeighborLoader(
+            graph,
+            num_neighbors=[num_neighbors] * num_layers,
+            input_nodes=selection,
+            batch_size=min(self.batch_size, selection.numel()),
+            shuffle=False,
+            num_workers=self.num_workers,
+            pin_memory=self.num_workers > 0 and self.device == "cuda",
+            multiprocessing_context="fork" if self.num_workers > 0 else None,
+        )
 
-            # default to -1 for unpredicted particles
-            results = torch.full((data.particles.count,), -1, dtype=torch.long)
-            out = yield from self.inference(self.model, loader)
-        except Exception:
-            loader = NeighborLoader(
-                graph,
-                num_neighbors=[num_neighbors] * num_layers,
-                input_nodes=selection,
-                batch_size=min(self.batch_size, selection.numel()),
-                shuffle=False,
-                num_workers=self.num_workers,
-                pin_memory=self.num_workers > 0 and self.device == "cuda",
-                multiprocessing_context="spawn" if self.num_workers > 0 else None,
-            )
+        # default to -1 for unpredicted particles
+        results = torch.full((data.particles.count,), -1, dtype=torch.long)
+        out = yield from self.inference(self.model, loader)
 
-            # default to -1 for unpredicted particles
-            results = torch.full((data.particles.count,), -1, dtype=torch.long)
-            out = yield from self.inference(self.model, loader)
+        # default to -1 for unpredicted particles
+        results = torch.full((data.particles.count,), -1, dtype=torch.long)
+        out = yield from self.inference(self.model, loader)
         results[selection] = out
 
         # Placeholder for logic to apply results to the data collection
