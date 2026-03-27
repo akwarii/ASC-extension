@@ -25,11 +25,12 @@ dependencies = [
 
 [tool.uv]
 no-build-isolation-package = ["pyg-lib"]
-extra-build-dependencies = { pyg-lib = [
-    "ninja>=1.13.0",
-    "wheel>=0.46.3",
-    "setuptools>=81.0.0",
-] }
+
+[tool.uv.extra-build-dependencies]
+pyg-lib = ["ninja>=1.13.0", "wheel>=0.46.3", "setuptools>=81.0.0"]
+
+[tool.uv.extra-build-variables]
+pyg-lib = { "FORCE_CUDA" = "FALSE" }
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0.0", "pytest-cov>=4.0.0"]
@@ -52,10 +53,10 @@ filterwarnings = [
 ]
 
 # TODO: test if the build works with the GPU version of PyTorch. If it does, remove the CPU-specific index and source.
-[tool.uv.sources]
-torch = [{ index = "pytorch-cpu" }]
+# [tool.uv.sources]
+# torch = [{ index = "pytorch-cpu" }]
 
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
+# [[tool.uv.index]]
+# name = "pytorch-cpu"
+# url = "https://download.pytorch.org/whl/cpu"
+# explicit = true
