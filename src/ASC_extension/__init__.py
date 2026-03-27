@@ -152,7 +152,7 @@ class ASCModifier(ModifierInterface):
     elif torch.backends.mps.is_available():
         device = Enum("mps", ["mps", "cpu"], label="Device")
     else:
-        device = "cpu"
+        device = Enum("cpu", ["cpu"], label="Device")
 
     _is_compiled = False
     should_compile = Bool(True, label="Model compilation")
