@@ -1,6 +1,7 @@
 #### Atomic Structure Classification ####
 # Description of your Python-based modifier.
 
+import hashlib
 import json
 import os
 from collections.abc import Generator
@@ -150,6 +151,7 @@ class ASCModifier(ModifierInterface):
         ],
     )
 
+    # Device traits
     if torch.cuda.is_available():
         device = Enum("cuda", ["cuda", "cpu"], label="Device")
     elif torch.backends.mps.is_available():
@@ -157,9 +159,11 @@ class ASCModifier(ModifierInterface):
     else:
         device = Enum("cpu", ["cpu"], label="Device")
 
+    # Compilation traits
     _is_compiled = False
     should_compile = Bool(True, label="Model compilation")
 
+    # Batch and data loading traits
     # Workaround due to Range traits not supporting custom step values.
     _exponent = Range(low=0, value=10, label="Batch size exponent (2^x)")
     batch_size = Property(observe="_exponent", label="Batch size")
@@ -172,15 +176,19 @@ class ASCModifier(ModifierInterface):
         label="Data loading workers",
     )
 
+    # Additional traits
     only_selected = Bool(False, label="Only selected")
+
+    # Cache variables
+    _cached_graph = None
+    _last_structure_hash = None
 
     @observe("model_path")
     def _on_model_path_change(self, event):
         if not self.model_path:
-            if hasattr(self, "_program"):
-                del self._program
-                del self.model
-                del self.metadata
+            for attr in ["_program", "model", "_base_model", "metadata"]:
+                if hasattr(self, attr):
+                    delattr(self, attr)
             return
         self.load_model()
 
@@ -188,12 +196,12 @@ class ASCModifier(ModifierInterface):
     def _on_device_change(self, event):
         if hasattr(self, "model"):
             self._program = move_to_device_pass(self._program, self.device)
-            self.model = self._program.module()
+            self._base_model = self._program.module()
+            self.compile_model()
 
-    # TODO currently, a compiled model is not replaced with an uncompiled one if the user unchecks the "Model compilation" checkbox.
     @observe("should_compile")
     def _on_compile_change(self, event):
-        if hasattr(self, "model"):
+        if hasattr(self, "_base_model"):
             self.compile_model()
 
     @cached_property
@@ -229,15 +237,50 @@ class ASCModifier(ModifierInterface):
             for _ in range(5):
                 optimized_module(*example)
 
+    def _get_structure_hash(self, data: DataCollection) -> int:
+        """Generate a hash for the given structure to use in caching.
+
+        The hash is based on the atomic type, positions of the atoms,
+        unit cell parameters, and selection mask.
+
+        Args:
+            data: The OVITO DataCollection representing the structure.
+
+        Returns:
+            An integer hash value representing the structure.
+        """
+        hasher = hashlib.sha256()
+
+        positions = data.particles.positions[...]
+        hasher.update(positions.tobytes())
+
+        if "Particle Type" in data.particles:
+            types = data.particles["Particle Type"][...]
+            hasher.update(types.tobytes())
+
+        if data.cell:
+            cell = data.cell[...]
+            hasher.update(cell.tobytes())
+
+        if self.only_selected and data.particles.selection is not None:
+            selection = data.particles.selection[...]
+            hasher.update(selection.tobytes())
+
+        return int(hasher.hexdigest(), 16)
+
     def compile_model(self) -> None:
         if not self.should_compile:
+            self.model = self._base_model
             self._is_compiled = False
             return
 
+        # Compilation is only supported on CUDA devices with compute capability >= 7.0
         if self.device != "cuda" or torch.cuda.get_device_capability() < (7, 0):
+            self.model = self._base_model
             self._is_compiled = False
             return
 
+        # We have cuda and the device is compatible
         self.model.compile(fullgraph=True, dynamic=True)
         self._model_warmup(self.model)
         self._is_compiled = True
@@ -245,14 +288,12 @@ class ASCModifier(ModifierInterface):
     def load_model(self) -> None:
         extra_files = {"metadata.json": ""}
         program = torch.export.load(self.model_path, extra_files=extra_files)
-
         self.metadata = json.loads(extra_files["metadata.json"])
         self._validate_metadata()
 
         # Move the loaded program to the specified device before extracting the module
         self._program = move_to_device_pass(program, self.device)
-        self.model = self._program.module()
-
+        self._base_model = self._program.module()
         self.compile_model()
 
     @torch.inference_mode()
@@ -330,9 +371,15 @@ class ASCModifier(ModifierInterface):
             expanded_mask = torch.from_numpy(data.particles.selection[...]).bool()
             expanded_selection = torch.argwhere(expanded_mask).squeeze()
 
-        # TODO cache the graph if the structure doesn't change
-        knn = PeriodicKNN(num_neighbors=num_neighbors)
-        graph = knn.convert(data, selection=expanded_selection)
+        # Only rebuild the graph if the structure has changed
+        current_hash = self._get_structure_hash(data)
+        if self._cached_graph is None or self._last_structure_hash != current_hash:
+            knn = PeriodicKNN(num_neighbors=num_neighbors)
+            graph = knn.convert(data, selection=expanded_selection)
+            self._cached_graph = graph
+            self._last_structure_hash = current_hash
+        else:
+            graph = self._cached_graph
 
         loader = NeighborLoader(
             graph,
