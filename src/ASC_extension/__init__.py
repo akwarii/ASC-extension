@@ -375,14 +375,11 @@ class ASCModifier(ModifierInterface):
         current_hash = self._get_structure_hash(data)
         if self._cached_graph is None or self._last_structure_hash != current_hash:
             knn = PeriodicKNN(num_neighbors=num_neighbors)
-            graph = knn.convert(data, selection=expanded_selection)
-            self._cached_graph = graph
+            self._cached_graph = knn.convert(data, selection=expanded_selection)
             self._last_structure_hash = current_hash
-        else:
-            graph = self._cached_graph
 
         loader = NeighborLoader(
-            graph,
+            self._cached_graph,
             num_neighbors=[num_neighbors] * num_layers,
             input_nodes=selection,
             batch_size=min(self.batch_size, selection.numel()),
