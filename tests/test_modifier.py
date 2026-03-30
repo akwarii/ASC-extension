@@ -50,7 +50,7 @@ def modifier() -> ASCModifier:
 
 def test_defaults(pipeline: Pipeline, modifier: ASCModifier, device: str) -> None:
     """Test that the modifier has the expected default values."""
-    assert modifier.ckpt_file == ""
+    assert modifier.model_path == ""
     assert not hasattr(modifier, "model")
     assert modifier.device == device
 
@@ -63,13 +63,15 @@ def test_defaults(pipeline: Pipeline, modifier: ASCModifier, device: str) -> Non
         assert prop != "ASC Structure Type"
 
 
-def test_ckpt_loading(pipeline: Pipeline, modifier: ASCModifier, model_path: str) -> None:
+def test_ckpt_loading(
+    pipeline: Pipeline, modifier: ASCModifier, model_path: str
+) -> None:
     """Test that the modifier can load a model from a checkpoint file."""
-    modifier.ckpt_file = model_path
+    modifier.model_path = model_path
     pipeline.modifiers.append(modifier)
     data = pipeline.compute()
 
-    assert modifier.ckpt_file == model_path
+    assert modifier.model_path == model_path
     assert isinstance(modifier.model, torch.fx.GraphModule)
 
     # Check if the model parameters are on the correct device
@@ -88,25 +90,29 @@ def test_ckpt_loading(pipeline: Pipeline, modifier: ASCModifier, model_path: str
     assert "ASC Structure Type" in data.particles.keys()
 
 
-def test_ckpt_toggle(pipeline: Pipeline, modifier: ASCModifier, model_path: str) -> None:
+def test_ckpt_toggle(
+    pipeline: Pipeline, modifier: ASCModifier, model_path: str
+) -> None:
     """Test that changing the checkpoint file works as expected."""
-    modifier.ckpt_file = model_path
+    modifier.model_path = model_path
     pipeline.modifiers.append(modifier)
 
     # Initially, the model should be loaded from the specified checkpoint.
-    assert modifier.ckpt_file == model_path
+    assert modifier.model_path == model_path
     assert isinstance(modifier.model, torch.fx.GraphModule)
 
     # Change the checkpoint file to an empty string and check if the model is removed.
-    modifier.ckpt_file = ""
-    assert modifier.ckpt_file == ""
+    modifier.model_path = ""
+    assert modifier.model_path == ""
     assert not hasattr(modifier, "model")
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="Cuda not available")
-def test_compile_toggle(pipeline: Pipeline, modifier: ASCModifier, model_path: str) -> None:
+def test_compile_toggle(
+    pipeline: Pipeline, modifier: ASCModifier, model_path: str
+) -> None:
     """Test that toggling the compile option works as expected."""
-    modifier.ckpt_file = model_path
+    modifier.model_path = model_path
     pipeline.modifiers.append(modifier)
 
     # Initially, the model should be compiled.
@@ -122,9 +128,11 @@ def test_compile_toggle(pipeline: Pipeline, modifier: ASCModifier, model_path: s
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="Cuda is not available")
-def test_device_toggle_cuda(pipeline: Pipeline, modifier: ASCModifier, model_path: str) -> None:
+def test_device_toggle_cuda(
+    pipeline: Pipeline, modifier: ASCModifier, model_path: str
+) -> None:
     """Test that changing the device works as expected."""
-    modifier.ckpt_file = model_path
+    modifier.model_path = model_path
     pipeline.modifiers.append(modifier)
 
     # Initially, the model should be on the default device.
@@ -141,10 +149,14 @@ def test_device_toggle_cuda(pipeline: Pipeline, modifier: ASCModifier, model_pat
     assert next(modifier.model.parameters()).device.type == new_device
 
 
-@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS is not available")
-def test_device_toggle_mps(pipeline: Pipeline, modifier: ASCModifier, model_path: str) -> None:
+@pytest.mark.skipif(
+    not torch.backends.mps.is_available(), reason="MPS is not available"
+)
+def test_device_toggle_mps(
+    pipeline: Pipeline, modifier: ASCModifier, model_path: str
+) -> None:
     """Test that changing the device works as expected."""
-    modifier.ckpt_file = model_path
+    modifier.model_path = model_path
     pipeline.modifiers.append(modifier)
 
     # Initially, the model should be on the default device.
