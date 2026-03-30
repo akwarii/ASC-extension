@@ -108,23 +108,26 @@ def test_ckpt_toggle(
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="Cuda not available")
-def test_compile_toggle(
-    pipeline: Pipeline, modifier: ASCModifier, model_path: str
-) -> None:
+def test_compile_toggle(modifier: ASCModifier, model_path: str) -> None:
     """Test that toggling the compile option works as expected."""
     modifier.model_path = model_path
-    pipeline.modifiers.append(modifier)
 
     # Initially, the model should be compiled.
+    modifier.compile_model()
     assert modifier._is_compiled
+    assert modifier.model != modifier._base_model
 
     # Disable compilation and check if it is still compiled.
     modifier.should_compile = False
+    modifier.compile_model()
     assert not modifier._is_compiled
+    assert modifier.model == modifier._base_model
 
     # Recompile the model and check if it is compiled.
     modifier.should_compile = True
+    modifier.compile_model()
     assert modifier._is_compiled
+    assert modifier.model != modifier._base_model
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="Cuda is not available")
@@ -171,3 +174,28 @@ def test_device_toggle_mps(
     new_device = "mps"
     modifier.device = new_device
     assert next(modifier.model.parameters()).device.type == new_device
+
+
+def test_graph_caching(
+    pipeline: Pipeline, modifier: ASCModifier, model_path: str
+) -> None:
+    """Ensure the KNN graph is not rebuilt if the structure is static."""
+    modifier.model_path = model_path
+    data = pipeline.compute()
+
+    # Build graph
+    data.apply(modifier)
+    first_graph_id = id(modifier._cached_graph)
+    first_hash = modifier._last_structure_hash
+
+    # Reuse cached graph
+    data.apply(modifier)
+    assert id(modifier._cached_graph) == first_graph_id
+    assert modifier._last_structure_hash == first_hash
+
+    # Should rebuild graph
+    data.particles_.positions_[0] += (0.1, 0.1, 0.1)
+    data.apply(modifier)
+
+    assert id(modifier._cached_graph) != first_graph_id
+    assert modifier._last_structure_hash != first_hash
