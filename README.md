@@ -4,6 +4,8 @@ This is a *OVITO* wrapper for the [Atomic Structure Classification library](http
 
 ## Description
 
+<!-- TODO description of the project -->
+
 \[[Full description]\]
 
 ## Parameters
@@ -18,6 +20,8 @@ This is a *OVITO* wrapper for the [Atomic Structure Classification library](http
 | **Only selected**             | `only_selected` | Apply the modifier only to the selected particles. Following the convention set by other modifiers, even atoms that are not selected will be used as neighbors.                                                                                                        | `False`            |
 
 ## Example
+
+<!-- TODO add visual example -->
 
 \[[Usage example]\]
 
