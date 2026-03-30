@@ -97,7 +97,10 @@ class PeriodicKNN:
         # q_idx represents the central atoms (query points)
         # p_idx represents the neighbor atoms
         q_idx = (
-            torch.arange(selection.shape[0]).view(-1, 1).expand(-1, self.num_neighbors).flatten()
+            torch.arange(selection.shape[0])
+            .view(-1, 1)
+            .expand(-1, self.num_neighbors)
+            .flatten()
         )
         p_idx = torch.from_numpy(indices).flatten().long()
 
@@ -138,8 +141,8 @@ class PeriodicKNN:
 
 
 class ASCModifier(ModifierInterface):
-    ckpt_file = FilePath(
-        label="Model file",
+    model_path = FilePath(
+        label="Model file path",
         ovito_file_exists=True,
         ovito_file_filter=[
             "PyTorch model (*.pt2)",
@@ -157,7 +160,7 @@ class ASCModifier(ModifierInterface):
     _is_compiled = False
     should_compile = Bool(True, label="Model compilation")
 
-    # Workaround for the fact that Range traits don't support power of 2 step values.
+    # Workaround due to Range traits not supporting custom step values.
     _exponent = Range(low=0, value=10, label="Batch size exponent (2^x)")
     batch_size = Property(observe="_exponent", label="Batch size")
 
@@ -171,24 +174,25 @@ class ASCModifier(ModifierInterface):
 
     only_selected = Bool(False, label="Only selected")
 
-    @observe("ckpt_file")
-    def _on_ckpt_file_change(self, event) -> None:
-        if not self.ckpt_file:
-            del self._program
-            del self.model
-            del self.metadata
+    @observe("model_path")
+    def _on_model_path_change(self, event):
+        if not self.model_path:
+            if hasattr(self, "_program"):
+                del self._program
+                del self.model
+                del self.metadata
             return
         self.load_model()
 
     @observe("device")
-    def _on_device_change(self, event) -> None:
+    def _on_device_change(self, event):
         if hasattr(self, "model"):
             self._program = move_to_device_pass(self._program, self.device)
             self.model = self._program.module()
 
     # TODO currently, a compiled model is not replaced with an uncompiled one if the user unchecks the "Model compilation" checkbox.
     @observe("should_compile")
-    def _on_compile_change(self, event) -> None:
+    def _on_compile_change(self, event):
         if hasattr(self, "model"):
             self.compile_model()
 
@@ -197,7 +201,7 @@ class ASCModifier(ModifierInterface):
         return int(2**self._exponent)
 
     def _validate_metadata(self) -> None:
-        required_keys = set(["num_neighbors", "num_layers"])
+        required_keys = {"num_neighbors", "num_layers"}
         actual_keys = set(self.metadata.keys())
 
         missing_keys = required_keys - actual_keys
@@ -215,7 +219,9 @@ class ASCModifier(ModifierInterface):
     def _model_warmup(self, optimized_module, *args) -> None:
         example = (
             torch.randint(low=1, high=118, size=(10,), device=self.device),
-            torch.randint(low=0, high=10, size=(2, 30), device=self.device, dtype=torch.long),
+            torch.randint(
+                low=0, high=10, size=(2, 30), device=self.device, dtype=torch.long
+            ),
             torch.randn(30, 3, device=self.device),
         )
 
@@ -238,7 +244,7 @@ class ASCModifier(ModifierInterface):
 
     def load_model(self) -> None:
         extra_files = {"metadata.json": ""}
-        program = torch.export.load(self.ckpt_file, extra_files=extra_files)
+        program = torch.export.load(self.model_path, extra_files=extra_files)
 
         self.metadata = json.loads(extra_files["metadata.json"])
         self._validate_metadata()
@@ -286,8 +292,10 @@ class ASCModifier(ModifierInterface):
     # - "ASC Confidence": the confidence score of the prediction (e.g. softmax probability)
     # - "ASC Top K Structure": the top K predicted structure types (e.g. as a list of integers)
     # - "ASC Structure Type": the predicted structure type (e.g. as an integer index)
-    def modify(self, data: DataCollection, frame: int, **kwargs) -> Generator[float, None, None]:
-        if not self.ckpt_file:
+    def modify(
+        self, data: DataCollection, frame: int, **kwargs
+    ) -> Generator[float, None, None]:
+        if not self.model_path:
             return
 
         if data.cell is None:
